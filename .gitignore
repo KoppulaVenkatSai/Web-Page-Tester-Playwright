@@ -1,0 +1,6 @@
+.venv/
+brave_profile/
+__pycache__/
+*.pyc
+*.png
+.DS_Store
