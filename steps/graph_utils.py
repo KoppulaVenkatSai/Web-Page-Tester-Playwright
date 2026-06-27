@@ -3,30 +3,13 @@ from playwright.async_api import Page
 
 JS_EXTRACT_FROM_MANAGER = """
 () => {
-    if (typeof window.globalCache === 'undefined') {
-        return [];
-    }
-    
-    // Find DigitalTwinManager in globalCache
-    let twin = window.globalCache.getObject('digitalTwin1');
-    if (!twin) {
-        for (const key of Object.keys(window.globalCache)) {
-            const obj = window.globalCache.getObject(key);
-            if (obj && obj.constructor && obj.constructor.name === 'DigitalTwinManager') {
-                twin = obj;
-                break;
-            }
-        }
-    }
-    
-    if (!twin || !twin.screensList) {
-        return [];
-    }
-    
-    function isElementVisible(el) {
+    function isElementVisible(el, checkSize = true) {
         if (!el) return false;
-        const rect = el.getBoundingClientRect();
-        if (rect.width <= 0 || rect.height <= 0) return false;
+        if (!el.isConnected) return false;
+        if (checkSize) {
+            const rect = el.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return false;
+        }
         
         let parent = el;
         while (parent && parent !== document.body) {
@@ -39,43 +22,96 @@ JS_EXTRACT_FROM_MANAGER = """
         return true;
     }
     
-    return twin.screensList.map((s, idx) => {
-        const title = s.screenName || 'Unknown';
+    // Find all dashboard boxes
+    const boxes = Array.from(document.querySelectorAll('.dashboard-box'));
+    return boxes.map(box => {
+        const header = box.querySelector('h3, h4, .box-header, .dashboard-box-header, label');
+        const title = header ? header.innerText.trim() : 'Unknown';
+        const visible = isElementVisible(box, true);
         
-        // Check visibility of the graph container
-        const containerNode = (s.lineInstance && s.lineInstance.container && s.lineInstance.container.node) ? s.lineInstance.container.node() : null;
-        let el = containerNode;
-        if (!el && s.screenId) {
-            el = document.getElementById(s.screenId) || document.querySelector('.' + s.screenId) || document.querySelector('[id*="' + s.screenId + '"]');
-        }
+        // Find line paths inside this box
+        const paths = Array.from(box.querySelectorAll('svg path.line'));
+        let actualValues = null;
+        let expectedValues = null;
+        let actualSample = null;
+        let expectedSample = null;
         
-        const visible = el ? isElementVisible(el) : false;
+        const mapToValues = (arr) => {
+            if (!Array.isArray(arr)) return null;
+            return arr.map(d => {
+                if (d === null || d === undefined) return null;
+                if (typeof d === 'number') return d;
+                if (typeof d === 'object') {
+                    if (typeof d.y === 'number') return d.y;
+                    if (typeof d.value === 'number') return d.value;
+                    if (typeof d.val === 'number') return d.val;
+                    if (typeof d.v === 'number') return d.v;
+                    
+                    const keys = Object.keys(d);
+                    for (const k of keys) {
+                        if (['x', 'date', 'time', 'timestamp', 'label'].includes(k.toLowerCase())) {
+                            continue;
+                        }
+                        if (typeof d[k] === 'number') return d[k];
+                        const num = parseFloat(d[k]);
+                        if (!isNaN(num)) return num;
+                    }
+                }
+                return parseFloat(d);
+            }).filter(v => typeof v === 'number' && !isNaN(v));
+        };
         
-        const actualObj = s.data ? s.data.Actual : null;
-        const expectedObj = s.data ? s.data.Expected : null;
+        paths.forEach(p => {
+            if (!isElementVisible(p, false)) return; // Skip hidden/stale paths
+            
+            const stroke = p.getAttribute('stroke') || '';
+            const computedStroke = window.getComputedStyle(p).stroke || '';
+            const data = p.__data__;
+            
+            if (data && Array.isArray(data)) {
+                const values = mapToValues(data);
+                const color = stroke || computedStroke || '';
+                const sample = data.slice(0, 2);
+                
+                if (color.includes('255, 127, 14') || color.includes('255,127,14')) {
+                    if (!actualValues || (values && values.length > actualValues.length)) {
+                        actualValues = values;
+                        actualSample = sample;
+                    }
+                } else if (color.includes('31, 119, 180') || color.includes('31,119,180')) {
+                    if (!expectedValues || (values && values.length > expectedValues.length)) {
+                        expectedValues = values;
+                        expectedSample = sample;
+                    }
+                }
+            }
+        });
         
-        const actualValues = actualObj ? actualObj.map(d => typeof d.y !== 'undefined' ? d.y : d.value).filter(v => typeof v === 'number' && !isNaN(v)) : null;
-        const expectedValues = expectedObj ? expectedObj.map(d => typeof d.y !== 'undefined' ? d.y : d.value).filter(v => typeof v === 'number' && !isNaN(v)) : null;
-        
-        const debug_paths = [];
-        if (el) {
-            const paths = Array.from(el.querySelectorAll('svg path.line'));
-            paths.forEach((p, pIdx) => {
-                debug_paths.push({
-                    class: p.getAttribute('class') || '',
-                    stroke: p.getAttribute('stroke') || '',
-                    computedStroke: window.getComputedStyle(p).stroke || '',
-                    dataLen: p.__data__ ? (Array.isArray(p.__data__) ? p.__data__.length : typeof p.__data__) : 0
-                });
-            });
-        }
+        const debug_paths = paths.map(p => {
+            const stroke = p.getAttribute('stroke') || '';
+            const computedStroke = window.getComputedStyle(p).stroke || '';
+            return {
+                class: p.getAttribute('class') || '',
+                stroke: stroke,
+                computedStroke: computedStroke,
+                dataLen: p.__data__ ? (Array.isArray(p.__data__) ? p.__data__.length : typeof p.__data__) : 0,
+                dataType: p.__data__ ? (Array.isArray(p.__data__) ? 'array' : typeof p.__data__) : 'null/undefined',
+                keys: p.__data__ ? Object.keys(p.__data__) : null,
+                actualLen: actualValues ? actualValues.length : -1,
+                expectedLen: expectedValues ? expectedValues.length : -1,
+                actualType: actualValues ? typeof actualValues : 'none',
+                actualSample: actualValues ? JSON.stringify(actualValues.slice(0, 3)) : ''
+            };
+        });
         
         return {
             title: title,
             actual: actualValues,
             expected: expectedValues,
             visible: visible,
-            debug_paths: debug_paths
+            debug_paths: debug_paths,
+            actual_sample: actualSample,
+            expected_sample: expectedSample
         };
     });
 }

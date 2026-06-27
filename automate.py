@@ -27,6 +27,9 @@ async def run_step(step_num: int, page) -> bool:
     
     print(f"[~] Loading/Reloading module {module_path}...")
     try:
+        if "steps.graph_utils" in sys.modules:
+            importlib.reload(sys.modules["steps.graph_utils"])
+            
         if module_path in sys.modules:
             # Hot-reload the module so code changes take effect immediately
             module = importlib.reload(sys.modules[module_path])

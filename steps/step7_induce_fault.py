@@ -17,15 +17,61 @@ def play_chime():
     else:
         print("\a", end="", flush=True)
 
+def check_name_match(induced_name: str, active_name: str) -> bool:
+    """
+    Checks if the induced fault name matches the active fault name
+    using a robust specific word overlap check, avoiding generic matches
+    like 'Failure' and mismatched location markers.
+    """
+    ind = induced_name.lower().replace("(r)", "").strip()
+    act = active_name.lower().replace("(r)", "").strip()
+    
+    if ind == act:
+        return True
+        
+    if ind in act or act in ind:
+        return True
+        
+    locations = {"hp", "ip", "lp", "hrh"}
+    
+    def get_words(s):
+        return set(w.strip(",().-") for w in s.split() if w.strip(",().-"))
+        
+    ind_words = get_words(ind)
+    act_words = get_words(act)
+    
+    # Verify location markers match
+    ind_loc = ind_words & locations
+    act_loc = act_words & locations
+    if ind_loc != act_loc:
+        return False
+        
+    generic = {"failure", "defect", "fault", "error", "problem", "issue", "block", "deviation", "r", "system"}
+    ind_specific = ind_words - generic - locations
+    act_specific = act_words - generic - locations
+    
+    # Check if there are conflicting modifiers
+    modifiers = {"terminal", "interstage", "seal", "blade", "tube", "flow", "pressure", "vacuum", "fouling", "corrosion", "reheater", "superheater", "evaporator", "economizer", "feedwater"}
+    ind_mods = ind_specific & modifiers
+    act_mods = act_specific & modifiers
+    if ind_mods and act_mods and ind_mods != act_mods:
+        return False
+        
+    overlap = ind_specific & act_specific
+    return len(overlap) > 0
+
 async def wait_for_graphs_alignment(page: Page, actions_log: list, get_active_fault_codes, timeout_seconds=180, interval=5) -> bool:
-    """Waits until actual and expected graph averages align within 5.0%."""
+    import sys
+    import importlib
+    if "steps.graph_utils" in sys.modules:
+        importlib.reload(sys.modules["steps.graph_utils"])
     from steps.graph_utils import extract_graphs
     start_time = time.time()
     
     while time.time() - start_time < timeout_seconds:
         # Retrieve active fault codes and log them to the event timeline during alignment
         try:
-            active_codes = await get_active_fault_codes()
+            active_codes = await get_active_fault_codes(page)
             check_time = datetime.datetime.now().strftime("%H:%M:%S")
             actions_log.append(f"[{check_time}] Alignment Phase - Checked status. Active codes: {active_codes}")
             print(f"    [{check_time}] Alignment Phase - Active fault codes: {active_codes}")
@@ -47,6 +93,17 @@ async def wait_for_graphs_alignment(page: Page, actions_log: list, get_active_fa
         active_comparisons = 0
         not_aligned_list = []
         
+        # Ensure active fault codes are cleared (Normal) before asserting alignment is complete
+        has_active_fault = False
+        for c in active_codes:
+            if c != "FCRST-00-000" and c != "":
+                has_active_fault = True
+                break
+                
+        if has_active_fault:
+            all_aligned = False
+            not_aligned_list.append("Active fault codes still present (not yet returned to Normal)")
+        
         for g in graphs:
             title = g.get('title', 'Unknown')
             actual_vals = g.get('actual')
@@ -67,7 +124,7 @@ async def wait_for_graphs_alignment(page: Page, actions_log: list, get_active_fa
             active_comparisons += 1
             if diff > 0.05:
                 all_aligned = False
-                not_aligned_list.append(f"'{title}': Diff={diff*100:.2f}% (Actual={mean_act:.2f}, Expected={mean_exp:.2f})")
+                not_aligned_list.append(f"'{title}': Diff={diff*100:.2f}% (Actual={mean_act:.2f}, Expected={mean_exp:.2f}) [Len: {len(actual_vals)} / {len(expected_vals)}] [Sample: {g.get('actual_sample')}]")
                 
         if all_aligned and active_comparisons > 0:
             return True
@@ -235,6 +292,40 @@ async def run(page: Page) -> None:
 
     print(f"[+] Identified {len(fault_options)} faults to test sequentially.")
 
+    # Check for previous failed faults in the most recent diagnostic report
+    try:
+        import glob
+        import re
+        report_files = sorted(glob.glob(os.path.join("Logs", "Fault_Diagnostic_Report_*.md")))
+        if report_files:
+            latest_report = report_files[-1]
+            failed_codes = set()
+            with open(latest_report, "r", encoding="utf-8") as f:
+                report_content = f.read()
+            for line in report_content.splitlines():
+                if "|" in line and "❌" in line:
+                    match = re.search(r"`(FCRST-[A-Z0-9]+-\d+)`", line)
+                    if match:
+                        failed_codes.add(match.group(1))
+            
+            if failed_codes:
+                print(f"\n[~] Found recent report: {latest_report}")
+                print(f"[~] Recently failed faults ({len(failed_codes)}): {list(failed_codes)}")
+                # Ask user via console input
+                user_ans = await asyncio.to_thread(
+                    input,
+                    "Do you want to ONLY run these recently failed faults? (y/N): "
+                )
+                if user_ans.strip().lower() in ("y", "yes"):
+                    filtered_options = [fo for fo in fault_options if fo[2] in failed_codes]
+                    if filtered_options:
+                        fault_options = filtered_options
+                        print(f"[+] Filtered to run only {len(fault_options)} failed faults.")
+                    else:
+                        print("[-] None of the failed faults match current dropdown options. Running all faults.")
+    except Exception as e:
+        print(f"[-] Error checking for recently failed faults: {e}")
+
     async def select_option(opt_text, opt_val):
         if is_standard_select:
             await select.select_option(value=opt_val)
@@ -254,28 +345,7 @@ async def run(page: Page) -> None:
                     break
             await page.wait_for_timeout(500)
 
-    async def get_active_fault_codes():
-        return await page.evaluate("""
-            () => {
-                const twin = window.globalCache.getObject('digitalTwin1');
-                if (!twin || !twin.statusAnalysis || !twin.statusAnalysis.faults) {
-                    return [];
-                }
-                return twin.statusAnalysis.faults.map(f => f.fault_code);
-            }
-        """)
-
-    async def get_status_analysis():
-        return await page.evaluate("""
-            () => {
-                const twin = window.globalCache.getObject('digitalTwin1');
-                if (!twin) return null;
-                return {
-                    statusAnalysis: twin.statusAnalysis,
-                    allFaults: twin.allFaults
-                };
-            }
-        """)
+    from steps.step8_get_status_fields import get_active_fault_codes, get_status_analysis
 
     test_results = []
     overall_start_time = datetime.datetime.now()
@@ -316,20 +386,34 @@ async def run(page: Page) -> None:
             elapsed += check_interval
             
             # Read state
-            active_codes = await get_active_fault_codes()
+            active_codes = await get_active_fault_codes(page)
             check_time = datetime.datetime.now().strftime("%H:%M:%S")
             actions_log.append(f"[{check_time}] Checked status. Active codes in state: {active_codes}")
             print(f"    [{check_time}] Active fault codes detected: {active_codes}")
             
+            # Retrieve status analysis details to check name similarity if code differs
+            analysis_data = await get_status_analysis(page)
+            if analysis_data:
+                analysis_details = analysis_data.get("statusAnalysis")
+                
+            matched = False
             if code in active_codes:
+                matched = True
+            elif analysis_details and "faults" in analysis_details:
+                for f in analysis_details["faults"]:
+                    active_name = f.get("fault_name") or f.get("likely_fault") or ""
+                    active_code = f.get("fault_code") or ""
+                    
+                    if check_name_match(name, active_name):
+                        matched = True
+                        print(f"    [~] Mapped induced fault '{name}' to active fault '{active_name}' (Code: {active_code}) via name overlap.")
+                        actions_log.append(f"[{check_time}] Mapped induced fault '{name}' to active fault '{active_name}' (Code: {active_code}) via name overlap.")
+                        break
+
+            if matched:
                 success = True
                 status_str = "Success"
                 detection_duration = (datetime.datetime.now() - induced_time).total_seconds()
-                
-                # Retrieve details
-                analysis_data = await get_status_analysis()
-                if analysis_data:
-                    analysis_details = analysis_data.get("statusAnalysis")
                 
                 try:
                     ui_analysis_text = await page.locator(".dt-combined-analysis").inner_text()
@@ -340,7 +424,22 @@ async def run(page: Page) -> None:
                 break
 
             # If we get any fault response that is incorrect, limit/keep the timeout to 120s
-            has_incorrect = any(c != "FCRST-00-000" and c != code for c in active_codes)
+            has_incorrect = False
+            for c in active_codes:
+                if c != "FCRST-00-000" and c != code:
+                    # check if this code matches the induced name via name overlap
+                    matched_this = False
+                    if analysis_details and "faults" in analysis_details:
+                        for f in analysis_details["faults"]:
+                            if f.get("fault_code") == c:
+                                active_name = f.get("fault_name") or f.get("likely_fault") or ""
+                                if check_name_match(name, active_name):
+                                    matched_this = True
+                                    break
+                    if not matched_this:
+                        has_incorrect = True
+                        break
+                        
             if has_incorrect and max_duration != 120.0:
                 print(f"    [~] Incorrect fault code detected. Reducing max wait timeout to 120s.")
                 actions_log.append(f"[{check_time}] Incorrect fault code detected. Reduced max timeout to 120s.")
@@ -353,7 +452,7 @@ async def run(page: Page) -> None:
             
             # Retrieve whatever incorrect response was present at timeout
             try:
-                analysis_data = await get_status_analysis()
+                analysis_data = await get_status_analysis(page)
                 if analysis_data:
                     analysis_details = analysis_data.get("statusAnalysis")
             except Exception as e:

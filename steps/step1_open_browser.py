@@ -38,7 +38,7 @@ async def run(playwright, url: str) -> tuple[BrowserContext, Page]:
     page = context.pages[0] if context.pages else await context.new_page()
     
     print(f"Navigating to: {url}...")
-    await page.goto(url)
+    await page.goto(url, timeout=100000)
     
     # Wait for the network to go idle (no active requests) so all login scripts/assets load
     print("Waiting for page assets and network to stabilize...")

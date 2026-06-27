@@ -5,7 +5,10 @@ async def run(page: Page) -> None:
     """
     Step 6: Waits until all visible D3 graphs have low difference between expected and actual values.
     """
-    print("Waiting for page and graphs to initialize...")
+    import sys
+    import importlib
+    if "steps.graph_utils" in sys.modules:
+        importlib.reload(sys.modules["steps.graph_utils"])
     from steps.graph_utils import extract_graphs
 
     threshold = 0.05  # 5% relative difference threshold
@@ -79,32 +82,7 @@ async def run(page: Page) -> None:
             for status in graphs_status:
                 print(status)
                 
-            # Print debug path details for up to 3 non-aligned graphs
-            printed_debug = 0
-            for g in graphs:
-                title = g.get('title', 'Unknown')
-                actual_vals = g.get('actual')
-                expected_vals = g.get('expected')
-                debug_paths = g.get('debug_paths', [])
-                
-                is_not_aligned = False
-                if actual_vals is None or expected_vals is None:
-                    continue
-                if not actual_vals or not expected_vals:
-                    is_not_aligned = True
-                else:
-                    mean_act = sum(actual_vals) / len(actual_vals)
-                    mean_exp = sum(expected_vals) / len(expected_vals)
-                    denom = max(abs(mean_exp), 1e-5)
-                    diff = abs(mean_act - mean_exp) / denom
-                    if diff > threshold:
-                        is_not_aligned = True
-                        
-                if is_not_aligned and printed_debug < 3:
-                    print(f"\n[DEBUG] Path details for '{title}':")
-                    for p_idx, p in enumerate(debug_paths):
-                        print(f"  Path {p_idx+1}: Class='{p['class']}', Stroke='{p['stroke']}', ComputedStroke='{p['computedStroke']}', DataLen={p['dataLen']}, DataType='{p.get('dataType')}', Keys={p.get('keys')}")
-                    printed_debug += 1
+            # Debug path details printing removed to reduce console clutter
                 
         if all_aligned and active_comparisons > 0:
             print(f"\n[+] Success! All {active_comparisons} graphs are aligned within {threshold*100}% difference.")
