@@ -9,7 +9,7 @@ sys.path.append(os.getcwd())
 from steps import step1_open_browser
 from steps import step2_play_sound
 from steps import step3_click_digital_twin
-from steps import step4_click_steam_turbine
+from steps import step4_click_asset
 from steps import step5_simulation_mode
 
 async def main():
@@ -20,7 +20,7 @@ async def main():
         context, page = await step1_open_browser.run(playwright, target_url)
         await step2_play_sound.run(page)
         await step3_click_digital_twin.run(page)
-        await step4_click_steam_turbine.run(page)
+        await step4_click_asset.run(page)
         await step5_simulation_mode.run(page)
         
         print("Waiting 5 seconds for graphs to load data...")

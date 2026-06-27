@@ -1,10 +1,19 @@
 import asyncio
 from playwright.async_api import Page
 
-async def run(page: Page) -> None:
+async def run(page: Page, ecn: str = None) -> bool:
     """
-    Step 4: Clicks on the element/icon that says "Steam Turbine Block - 1" (case-insensitive).
+    Step 4: Checks if the ECN (e.g. "AS-FCRST-DT-01") is present in the choosable asset options.
+    If yes, clicks it and returns True. Else, logs it not found and returns False.
     """
+    if not ecn:
+        from config import BaseConfig
+        if getattr(BaseConfig, "ecns_to_test", None):
+            ecn = BaseConfig.ecns_to_test[0]
+        else:
+            print("[-] No ECN provided and BaseConfig.ecns_to_test is empty.")
+            return False
+
     print("Waiting for page load after entering Digital Twin...")
     try:
         # Wait up to 10 seconds for network requests to settle
@@ -12,24 +21,25 @@ async def run(page: Page) -> None:
     except Exception:
         print("Timeout waiting for network idle, proceeding...")
 
-    target_text = "Steam Turbine Block - 1"
-    print(f"Searching for '{target_text}' elements...")
+    target_text = f"({ecn})"
+    print(f"Searching for asset option containing '{target_text}'...")
     
     # Locate elements containing target text (case-insensitive)
-    # Using locator("text=...") is case-insensitive by default in Playwright
     locator = page.locator(f"text={target_text}")
     
     try:
-        # Wait up to 15 seconds for the first match to be visible
-        await locator.first.wait_for(state="visible", timeout=15000)
-    except Exception as e:
-        print(f"Error: '{target_text}' text did not become visible within 15 seconds.")
-        print(f"Current URL: {page.url}")
-        print(f"Current Title: {await page.title()}")
-        return
+        # Wait up to 15 seconds for the ECN to be attached
+        await locator.first.wait_for(state="attached", timeout=15000)
+    except Exception:
+        print(f"[-] ECN '{ecn}' (as '{target_text}') not found in the choosable asset options.")
+        return False
+
+    if not await locator.first.is_visible():
+        print(f"[-] ECN '{ecn}' was found attached but is not visible on page.")
+        return False
 
     count = await locator.count()
-    print(f"Found {count} element(s) with text '{target_text}'.")
+    print(f"Found {count} element(s) matching ECN '{ecn}'.")
     
     # Print the tag name and text of each found element for debugging
     for i in range(count):
@@ -42,7 +52,7 @@ async def run(page: Page) -> None:
             print(f"  [{i}]: Error inspecting element: {e}")
 
     # Click the first matching element
-    print(f"Clicking the first '{target_text}' element...")
+    print(f"Clicking the first element matching ECN '{ecn}'...")
     try:
         await locator.first.click()
         print("Click action dispatched.")
@@ -54,7 +64,9 @@ async def run(page: Page) -> None:
             print("Force click dispatched.")
         except Exception as fe:
             print(f"Force click also failed: {fe}")
+            return False
             
     # Give the page 3 seconds to process the click/navigation
     await page.wait_for_timeout(3000)
     print("Step 4 finished.")
+    return True

@@ -207,7 +207,7 @@ def write_diagnostic_report(report_path, test_results, overall_start_time, overa
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report_md)
 
-async def run(page: Page) -> None:
+async def run(page: Page, ecn: str = None) -> None:
     """
     Step 7: Sequential Fault Testing.
     Induces each fault, waits up to 120s (checking every 10s) for the status analysis
@@ -353,7 +353,8 @@ async def run(page: Page) -> None:
     # Generate report path with timestamp once
     os.makedirs("Logs", exist_ok=True)
     timestamp_str = overall_start_time.strftime("%Y%m%d_%H%M%S")
-    report_path = f"Logs/Fault_Diagnostic_Report_{timestamp_str}.md"
+    ecn_suffix = f"_{ecn}" if ecn else ""
+    report_path = f"Logs/Fault_Diagnostic_Report{ecn_suffix}_{timestamp_str}.md"
 
     for i, (orig_idx, name, code) in enumerate(fault_options, 1):
         print(f"\n==================================================")

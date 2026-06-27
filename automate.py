@@ -8,10 +8,10 @@ from playwright.async_api import async_playwright
 from steps import step1_open_browser
 from steps import step2_play_sound
 
-async def run_step(step_num: int, page) -> bool:
+async def run_step(step_num: int, page, *args, **kwargs) -> bool:
     """
     Dynamically searches, imports/reloads, and runs a step file by its number.
-    e.g., 'r 3' looks for steps/step3_*.py, reloads it, and calls module.run(page)
+    e.g., 'r 3' looks for steps/step3_*.py, reloads it, and calls module.run(page, *args, **kwargs)
     """
     # Find any file starting with step{step_num}_ in the steps directory
     pattern = os.path.join("steps", f"step{step_num}_*.py")
@@ -37,7 +37,9 @@ async def run_step(step_num: int, page) -> bool:
             module = importlib.import_module(module_path)
             
         print(f"[+] Running Step {step_num}...")
-        await module.run(page)
+        res = await module.run(page, *args, **kwargs)
+        if isinstance(res, bool):
+            return res
         return True
     except Exception as e:
         print(f"[-] Error executing Step {step_num}: {e}")
@@ -56,19 +58,45 @@ async def main():
         await step2_play_sound.run(page)
         print("[+] Step 2 completed: User logged in.")
         
-        # 3. Automatically run other existing steps sequentially
-        step_num = 3
-        while True:
-            # Check if steps/step{step_num}_*.py exists
-            pattern = os.path.join("steps", f"step{step_num}_*.py")
-            if glob.glob(pattern):
-                success = await run_step(step_num, page)
-                if not success:
-                    print(f"[-] Auto-run stopped at step {step_num} due to an error.")
-                    break
-                step_num += 1
-            else:
-                break
+        # 3. Load ECNs to test from configuration
+        from config import BaseConfig
+        ecns_to_test = getattr(BaseConfig, "ecns_to_test", [])
+        print(f"[+] Loaded ECNs to test: {ecns_to_test}")
+        
+        for ecn in ecns_to_test:
+            print(f"\n==================================================")
+            print(f" STARTING TEST PROCESS FOR ASSET ECN: {ecn}")
+            print(f"==================================================")
+            
+            # Navigate back to Launchpad page to ensure a clean start
+            print(f"[~] Navigating to Launchpad URL...")
+            await page.goto(target_url)
+            
+            # Run Step 3 (Click Digital Twin)
+            step3_success = await run_step(3, page)
+            if not step3_success:
+                print(f"[-] Step 3 (Digital Twin) failed for ECN {ecn}. Skipping this asset.")
+                continue
+                
+            # Run Step 4 (Click Asset ECN)
+            asset_found = await run_step(4, page, ecn=ecn)
+            if not asset_found:
+                print(f"[-] Asset ECN '{ecn}' not found in options. Moving to next ECN.")
+                continue
+                
+            # Run the remaining steps for this asset
+            print(f"[+] Asset '{ecn}' loaded successfully. Running remaining steps...")
+            
+            # Step 5: Simulation Mode
+            await run_step(5, page)
+            # Step 6: Wait Graphs
+            await run_step(6, page)
+            # Step 7: Induce Fault
+            await run_step(7, page, ecn=ecn)
+            # Step 8: Get Status Fields
+            await run_step(8, page)
+            
+            print(f"[+] Finished test process for asset ECN: {ecn}")
         
         # 4. Enter Interactive Hot-Reload Console Loop
         print("\n" + "="*50)
